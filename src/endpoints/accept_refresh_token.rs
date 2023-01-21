@@ -12,5 +12,5 @@ pub fn config(cfg: &mut web::ServiceConfig) {
 
 
 async fn accept_refresh_token_endpoint(user_data: web::Json<RefreshToken>) -> impl Responder {
-    HttpResponse::Ok().body(format!("Auth user with username {} and pass {}", user_data.username, user_data.password))
+    HttpResponse::Ok().body("Auth user with username")
 }

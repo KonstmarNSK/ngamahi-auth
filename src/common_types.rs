@@ -1,5 +1,16 @@
+
+
+pub type Login = String;    // must be unique
+pub type Role = String;
+pub type Salt = String;
+pub type Pepper = String;
+
+
 pub mod tokens {
+    use argon2::{Algorithm, Argon2, Params, Version};
+    use password_hash::PasswordHasher;
     use serde::Deserialize;
+    use crate::common_types::{Salt, Pepper};
 
     pub struct JWT {
         pub header: Header,
@@ -15,9 +26,30 @@ pub mod tokens {
 
 
     #[derive(Deserialize)]
-    pub struct RefreshToken {
-        pub username: String,
-        pub password: String,
+    pub struct RefreshToken { token: String }
+
+
+    /// Storing refresh token alongside with password hash is like
+    /// storing the password itself in plaintext alongside its hash.
+    #[derive(Clone)]
+    #[derive(PartialEq, Eq, Hash)]
+    pub struct RefreshTokenHash(String);
+
+    impl RefreshTokenHash {
+        pub fn new(salt: &Salt, pepper: &Pepper, token: &RefreshToken) -> Self {
+            let hashing_algorithm = Algorithm::default();
+
+            let ctx = Argon2::new_with_secret(
+                pepper.as_bytes(),
+                hashing_algorithm,
+                Version::default(),
+                Params::default(),
+            ).unwrap();
+
+            RefreshTokenHash(
+                ctx.hash_password(token.token.as_bytes(), &salt).unwrap().serialize().to_string()
+            )
+        }
     }
 }
 
@@ -25,11 +57,8 @@ pub mod tokens {
 pub mod credentials {
     use argon2::{Algorithm, Argon2, Params, Version};
     use password_hash::PasswordHasher;
+    use crate::common_types::{Login, Pepper, Salt};
 
-    pub type Login = String;    // must be unique
-    pub type Role = String;
-    pub type Salt = String;
-    pub type Pepper = String;
 
     #[derive(Clone)]
     pub struct UserCredentials {
@@ -38,17 +67,20 @@ pub mod credentials {
     }
 
     #[derive(Clone)]
+    #[derive(Eq, PartialEq)]
     pub struct Password {
         pub salt: Salt,
-        pub pass: PasswordHash,
+        pub hash: PasswordHash,
     }
 
+
+    // fixme: compare via password_hash crate
     #[derive(Clone)]
+    #[derive(PartialEq, Eq, Hash)]
     pub struct PasswordHash(String);
 
-
     impl PasswordHash {
-        pub fn new(salt: &Salt, pepper: &Pepper, pass: String) -> Self {
+        pub fn new(salt: &Salt, pepper: &Pepper, pass: &str) -> Self {
             let hashing_algorithm = Algorithm::default();
 
             let ctx = Argon2::new_with_secret(
@@ -59,7 +91,7 @@ pub mod credentials {
             ).unwrap();
 
             PasswordHash(
-                ctx.hash_password(&pass.as_bytes(), &salt).unwrap().serialize().to_string()
+                ctx.hash_password(pass.as_bytes(), &salt).unwrap().serialize().to_string()
             )
         }
     }
@@ -67,10 +99,12 @@ pub mod credentials {
 
 
 pub mod user_data {
-    use crate::common_types::credentials::{Role, UserCredentials};
+    use std::collections::HashSet;
+    use crate::common_types::credentials::UserCredentials;
+    use crate::common_types::Role;
 
     pub struct UserData {
         pub credentials: UserCredentials,
-        pub roles: Vec<Role>,
+        pub roles: HashSet<Role>,
     }
 }
