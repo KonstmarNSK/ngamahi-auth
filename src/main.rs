@@ -1,3 +1,9 @@
+mod logic;
+mod storage;
+mod common_types;
+mod endpoints;
+
+use endpoints::*;
 use actix_web::{get, post, web, App, HttpResponse, HttpServer, Responder};
 
 #[get("/")]
@@ -18,6 +24,11 @@ async fn manual_hello() -> impl Responder {
 async fn main() -> std::io::Result<()> {
     HttpServer::new(|| {
         App::new()
+            .service(web::scope("/api")
+                .configure(user_create::config)
+                .configure(user_auth::config)
+            )
+
             .service(hello)
             .service(echo)
             .route("/hey", web::get().to(manual_hello))
