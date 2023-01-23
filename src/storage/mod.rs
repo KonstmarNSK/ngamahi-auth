@@ -23,10 +23,10 @@ pub mod user {
         fn add_roles(&mut self, login: &Login, roles_to_add: HashSet<Role>) -> Result<(), (HashSet<Role>, StorageErr)>;
         fn remove_roles(&mut self, login: &Login, roles_to_remove: HashSet<Role>) -> Result<(), (HashSet<Role>, StorageErr)>;
 
-        fn store(&mut self, token: RefreshTokenHash) -> Result<(), (RefreshTokenHash, StorageErr)>;
+        fn store_rt(&mut self, token: RefreshTokenHash) -> Result<(), (RefreshTokenHash, StorageErr)>;
 
         /// Search given token in storage and delete it. Returns true if token was found, false otherwise
-        fn delete(&mut self, token: RefreshTokenHash) -> Result<bool, (RefreshTokenHash, StorageErr)>;
+        fn delete_rt(&mut self, token: RefreshTokenHash) -> Result<bool, (RefreshTokenHash, StorageErr)>;
     }
 
     pub enum StorageErr {
@@ -38,17 +38,28 @@ pub mod user {
 // Front storage sends a command to a back storage that owns the data.
 // Return values are passed back to front by atomic references
 pub mod storage_messages {
+    use std::collections::HashSet;
     use std::future::Future;
     use std::pin::Pin;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
     use std::task::{Context, Poll};
     use futures::task::AtomicWaker;
+    use crate::common_types::credentials::Password;
+    use crate::common_types::{Login, Role};
+    use crate::common_types::tokens::{RefreshToken, RefreshTokenHash};
+    use crate::common_types::user_data::UserData;
+    use crate::storage::user::StorageErr;
 
     // request
-
     pub enum StorageReq {
-
+        CreateUserData{ data: UserData, ret: StorageResp<Result<(), (UserData, StorageErr)>> },
+        LoadUserData{ login: Login, ret: Result<Option<UserData>, StorageErr> },
+        ChangePass{ login: Login, new_pass: Password, old_pass: Password, ret: Result<(), StorageErr>},
+        AddRoles{login: Login, roles_to_add: HashSet<Role>, ret: Result<(), (HashSet<Role>, StorageErr)> },
+        RemoveRoles{login: Login, roles_to_remove: HashSet<Role>, ret: Result<(), (HashSet<Role>, StorageErr)>},
+        StoreRT{token: RefreshToken, ret: Result<(), (RefreshTokenHash, StorageErr)> },
+        DeleteRT{token: RefreshToken, ret: Result<(), (RefreshTokenHash, StorageErr)> },
     }
 
 
@@ -172,11 +183,11 @@ pub mod front {
             todo!()
         }
 
-        fn store(&mut self, token: RefreshTokenHash) -> Result<(), (RefreshTokenHash, StorageErr)> {
+        fn store_rt(&mut self, token: RefreshTokenHash) -> Result<(), (RefreshTokenHash, StorageErr)> {
             todo!()
         }
 
-        fn delete(&mut self, token: RefreshTokenHash) -> Result<bool, (RefreshTokenHash, StorageErr)> {
+        fn delete_rt(&mut self, token: RefreshTokenHash) -> Result<bool, (RefreshTokenHash, StorageErr)> {
             todo!()
         }
     }
