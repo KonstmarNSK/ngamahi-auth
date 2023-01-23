@@ -1,6 +1,13 @@
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicPtr, Ordering};
-use futures::task::AtomicWaker;
+use actix::{Actor, Context, Handler};
+use crate::common_types::Role;
+use crate::common_types::tokens::RefreshTokenHash;
+
+use crate::common_types::user_data::UserData;
+use crate::storage::storage_messages::{AddRoles, ChangePass, CreateUserData, DeleteRT, LoadUserData, RemoveRoles, StoreRT};
+use crate::storage::user::{Storage, StorageErr};
 
 mod in_memory;
 
@@ -14,7 +21,7 @@ pub mod user {
 
     pub trait Storage {
         fn create_user_data(&mut self, data: UserData) -> Result<(), (UserData, StorageErr)>;
-        fn load_user_data(&mut self, login: &Login) -> Result<Option<&UserData>, StorageErr>;
+        fn load_user_data(&mut self, login: &Login) -> Result<Option<UserData>, StorageErr>;
 
         // updates
         fn change_pass(&mut self, login: &Login, new_pass: Password, old_pass: Password)
@@ -39,156 +46,110 @@ pub mod user {
 // Return values are passed back to front by atomic references
 pub mod storage_messages {
     use std::collections::HashSet;
-    use std::future::Future;
-    use std::pin::Pin;
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
-    use std::task::{Context, Poll};
-    use futures::task::AtomicWaker;
-    use crate::common_types::credentials::Password;
-    use crate::common_types::{Login, Role};
-    use crate::common_types::tokens::{RefreshToken, RefreshTokenHash};
-    use crate::common_types::user_data::UserData;
-    use crate::storage::user::StorageErr;
-
-    // request
-    pub enum StorageReq {
-        CreateUserData{ data: UserData, ret: StorageResp<Result<(), (UserData, StorageErr)>> },
-        LoadUserData{ login: Login, ret: Result<Option<UserData>, StorageErr> },
-        ChangePass{ login: Login, new_pass: Password, old_pass: Password, ret: Result<(), StorageErr>},
-        AddRoles{login: Login, roles_to_add: HashSet<Role>, ret: Result<(), (HashSet<Role>, StorageErr)> },
-        RemoveRoles{login: Login, roles_to_remove: HashSet<Role>, ret: Result<(), (HashSet<Role>, StorageErr)>},
-        StoreRT{token: RefreshToken, ret: Result<(), (RefreshTokenHash, StorageErr)> },
-        DeleteRT{token: RefreshToken, ret: Result<(), (RefreshTokenHash, StorageErr)> },
-    }
-
-
-
-    // response
-
-    #[derive(Clone)]
-    pub struct StorageResp<TValue> {
-        arc: Arc<StorageRespInner<TValue>>
-    }
-
-    struct StorageRespInner<TValue>{
-        waker: AtomicWaker,
-        set: AtomicBool,
-        value: AtomicPtr<TValue>
-    }
-
-    impl<TValue> StorageResp<TValue> {
-        pub fn new() -> Self {
-            StorageResp{
-                arc: Arc::new(
-                    StorageRespInner {
-                        waker: AtomicWaker::new(),
-                        set: AtomicBool::new(false),
-                        value: AtomicPtr::<TValue>::default()
-                    }
-                )
-            }
-        }
-
-        pub fn set(self, mut val: TValue) {
-            self.arc.value.store(&mut val, Ordering::Release);
-            self.arc.set.store(true, Ordering::Release);    // todo: maybe Relaxed?
-            self.arc.waker.wake();
-        }
-    }
-
-    impl<TValue: Sized + Clone> Future for StorageResp<TValue> {
-        type Output = Option<TValue>;
-
-        fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-            // quick check to avoid registration if already done.
-            if self.arc.set.load(Ordering::Acquire) {
-                let val = self.arc.value.load(Ordering::Acquire);
-
-                // todo: check safety
-                return unsafe { Poll::Ready(val.as_ref().cloned()) };
-            }
-
-            self.arc.waker.register(cx.waker());
-
-            // Need to check condition **after** `register` to avoid a race
-            // condition that would result in lost notifications.
-            if self.arc.set.load(Ordering::Acquire) {
-                let val = self.arc.value.load(Ordering::Acquire);
-
-                // todo: check safety
-                return unsafe { Poll::Ready(val.as_ref().cloned()) };
-            } else {
-                Poll::Pending
-            }
-        }
-    }
-}
-
-/// Front is immutable struct that holds Sender part of chanel to the thread that owns the data (back storage).
-/// Front can create a StorageOperation object that gets a copy of Sender and sends a msg to the back storage.
-/// The back storage sends return values back via atomic ptrs (it's encapsulated in StorageOperation)
-pub mod front {
-    use std::collections::HashSet;
-    use std::sync::mpsc::Sender;
+    use actix::Message;
     use crate::common_types::credentials::Password;
     use crate::common_types::{Login, Role};
     use crate::common_types::tokens::RefreshTokenHash;
     use crate::common_types::user_data::UserData;
-    use crate::storage::storage_messages::{StorageReq, StorageResp};
-    use crate::storage::user::{Storage, StorageErr};
+    use crate::storage::user::StorageErr;
 
-    pub struct Front {
-        back_channel: Sender<StorageReq>
-    }
+    // request
+    pub struct CreateUserData{ pub data: UserData }
+    pub struct LoadUserData{ pub login: Login }
+    pub struct ChangePass{ pub login: Login, pub new_pass: Password, pub old_pass: Password }
+    pub struct AddRoles{ pub login: Login, pub roles_to_add: HashSet<Role> }
+    pub struct RemoveRoles{ pub login: Login, pub roles_to_remove: HashSet<Role> }
+    pub struct StoreRT{ pub token: RefreshTokenHash }
+    pub struct DeleteRT{ pub token: RefreshTokenHash }
 
-    pub struct StorageOperation<Ret: Sized + Clone> {
-        back_channel: Sender<StorageReq>,
-        return_val: StorageResp<Ret>
-    }
+    impl Message for CreateUserData { type Result = Result<(), (UserData, StorageErr)>; }
+    impl Message for LoadUserData { type Result = Result<Option<UserData>, StorageErr>; }
+    impl Message for ChangePass { type Result = Result<(), StorageErr>; }
+    impl Message for AddRoles { type Result = Result<(), (HashSet<Role>, StorageErr)>; }
+    impl Message for RemoveRoles { type Result = Result<(), (HashSet<Role>, StorageErr)>; }
+    impl Message for StoreRT { type Result = Result<(), (RefreshTokenHash, StorageErr)>; }
+    impl Message for DeleteRT { type Result = Result<bool, (RefreshTokenHash, StorageErr)>; }
+}
 
-    impl <Ret: Sized + Clone> StorageOperation<Ret> {
-        pub async fn await_result(self) -> Option<Ret> {
-            self.return_val.await
+pub enum InnerStorage{
+    InMemoryLocal(in_memory::user_storage::Storage),
+}
+
+pub struct StorageActor {
+    storage: InnerStorage,
+}
+
+impl Actor for StorageActor {
+    type Context = Context<Self>;
+}
+
+
+impl Handler<CreateUserData> for StorageActor {
+    type Result = Result<(), (UserData, StorageErr)>;
+
+    fn handle(&mut self, msg: CreateUserData, ctx: &mut Self::Context) -> Self::Result {
+        match &mut self.storage {
+            InnerStorage::InMemoryLocal(storage) => storage.create_user_data(msg.data)
         }
     }
+}
 
-    impl Front {
-        pub fn storage<Ret: Sized + Clone>(&self) -> StorageOperation<Ret> {
-            StorageOperation{
-                back_channel: self.back_channel.clone(),
-                return_val: StorageResp::<Ret>::new(),
-            }
+impl Handler<LoadUserData> for StorageActor {
+    type Result = Result<Option<UserData>, StorageErr>;
+
+    fn handle(&mut self, msg: LoadUserData, ctx: &mut Self::Context) -> Self::Result {
+        match &mut self.storage {
+            InnerStorage::InMemoryLocal(storage) => storage.load_user_data(&msg.login)
         }
     }
+}
 
-    impl<Ret: Sized + Clone> Storage for StorageOperation<Ret> {
-        fn create_user_data(&mut self, data: UserData) -> Result<(), (UserData, StorageErr)> {
-            todo!()
+impl Handler<ChangePass> for StorageActor {
+    type Result = Result<(), StorageErr>;
+
+    fn handle(&mut self, msg: ChangePass, ctx: &mut Self::Context) -> Self::Result {
+        match &mut self.storage {
+            InnerStorage::InMemoryLocal(storage) => storage.change_pass(&msg.login, msg.new_pass, msg.old_pass)
         }
+    }
+}
 
-        fn load_user_data(&mut self, login: &Login) -> Result<Option<&UserData>, StorageErr> {
-            todo!()
+impl Handler<AddRoles> for StorageActor {
+    type Result = Result<(), (HashSet<Role>, StorageErr)>;
+
+    fn handle(&mut self, msg: AddRoles, ctx: &mut Self::Context) -> Self::Result {
+        match &mut self.storage {
+            InnerStorage::InMemoryLocal(storage) => storage.add_roles(&msg.login, msg.roles_to_add)
         }
+    }
+}
 
-        fn change_pass(&mut self, login: &Login, new_pass: Password, old_pass: Password) -> Result<(), StorageErr> {
-            todo!()
+impl Handler<RemoveRoles> for StorageActor {
+    type Result = Result<(), (HashSet<Role>, StorageErr)>;
+
+    fn handle(&mut self, msg: RemoveRoles, ctx: &mut Self::Context) -> Self::Result {
+        match &mut self.storage {
+            InnerStorage::InMemoryLocal(storage) => storage.remove_roles(&msg.login, msg.roles_to_remove)
         }
+    }
+}
 
-        fn add_roles(&mut self, login: &Login, roles_to_add: HashSet<Role>) -> Result<(), (HashSet<Role>, StorageErr)> {
-            todo!()
+impl Handler<StoreRT> for StorageActor {
+    type Result = Result<(), (RefreshTokenHash, StorageErr)>;
+
+    fn handle(&mut self, msg: StoreRT, ctx: &mut Self::Context) -> Self::Result {
+        match &mut self.storage {
+            InnerStorage::InMemoryLocal(storage) => storage.store_rt(msg.token)
         }
+    }
+}
 
-        fn remove_roles(&mut self, login: &Login, roles_to_remove: HashSet<Role>) -> Result<(), (HashSet<Role>, StorageErr)> {
-            todo!()
-        }
+impl Handler<DeleteRT> for StorageActor {
+    type Result = Result<bool, (RefreshTokenHash, StorageErr)>;
 
-        fn store_rt(&mut self, token: RefreshTokenHash) -> Result<(), (RefreshTokenHash, StorageErr)> {
-            todo!()
-        }
-
-        fn delete_rt(&mut self, token: RefreshTokenHash) -> Result<bool, (RefreshTokenHash, StorageErr)> {
-            todo!()
+    fn handle(&mut self, msg: DeleteRT, ctx: &mut Self::Context) -> Self::Result {
+        match &mut self.storage {
+            InnerStorage::InMemoryLocal(storage) => storage.delete_rt(msg.token)
         }
     }
 }

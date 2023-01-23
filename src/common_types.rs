@@ -103,6 +103,7 @@ pub mod user_data {
     use crate::common_types::credentials::UserCredentials;
     use crate::common_types::Role;
 
+    #[derive(Clone)]
     pub struct UserData {
         pub credentials: UserCredentials,
         pub roles: HashSet<Role>,

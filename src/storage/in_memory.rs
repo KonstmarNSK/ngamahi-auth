@@ -24,8 +24,8 @@ pub mod user_storage {
             Ok(())
         }
 
-        fn load_user_data(&mut self, login: &Login) -> Result<Option<&UserData>, StorageErr> {
-            Ok(self.users_data.get(login))
+        fn load_user_data(&mut self, login: &Login) -> Result<Option<UserData>, StorageErr> {
+            Ok(self.users_data.get(login).cloned())
         }
 
         fn change_pass(&mut self, login: &Login, new_pass: Password, old_pass: Password) -> Result<(), StorageErr> {
